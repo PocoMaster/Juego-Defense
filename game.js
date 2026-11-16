@@ -1,21 +1,25 @@
 // ============================================================
 // LÓGICA DEL JUEGO
+// Flujo: PREPARACIÓN (el jugador compra) -> COMBATE (automático) -> REGRESO (automático)
 // ============================================================
 
 const CONFIG = {
   cols: 13,
   rows: 9,
-  castle: { x: 6, y: 4 },     // casilla central
+  castle: { x: 1, y: 4 },     // casilla central del castillo (a la izquierda)
   castleHp: 100,
   startGold: 100,
   aggroRadius: 5,             // distancia (desde el castillo) a la que las unidades salen a por los enemigos
   spawn: { x: 12, y: 4 },     // punto por donde llegan siempre los enemigos
-  spawnPerTurn: 2,            // enemigos que aparecen cada turno
+  spawnPerStep: 2,            // enemigos que aparecen en cada paso del combate
   waveBonus: 25,              // oro extra al superar una oleada
+  stepDelay: 350,             // milisegundos entre pasos del combate (más bajo = más rápido)
+  maxCombatSteps: 400,        // seguridad: si el combate se atasca, se pausa
 };
 
 let state = null;
 const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- Utilidades ----------
 const inBounds = (x, y) => x >= 0 && y >= 0 && x < CONFIG.cols && y < CONFIG.rows;
@@ -39,7 +43,7 @@ function makeEntity(side, typeKey, x, y) {
 // ---------- Inicio de partida ----------
 function newGame() {
   state = {
-    turn: 1,
+    phase: 'build',            // 'build' | 'combat' | 'return'
     wave: 1,
     gold: CONFIG.startGold,
     castleHp: CONFIG.castleHp,
@@ -160,7 +164,7 @@ function cleanup() {
 function spawnEnemies() {
   const { x: sx, y: sy } = CONFIG.spawn;
   const rows = [...Array(CONFIG.rows).keys()].sort((a, b) => Math.abs(a - sy) - Math.abs(b - sy));
-  let n = CONFIG.spawnPerTurn;
+  let n = CONFIG.spawnPerStep;
   while (n > 0 && state.queue.length) {
     const y = rows.find((r) => isFree(sx, r));
     if (y === undefined) break;
@@ -169,10 +173,8 @@ function spawnEnemies() {
   }
 }
 
-// ---------- Turno ----------
-function endTurn() {
-  if (state.over) return;
-
+// Un paso del combate automático
+function combatStep() {
   playerPhase();
   cleanup();
   enemyPhase();
@@ -183,20 +185,79 @@ function endTurn() {
     gameOver();
     return;
   }
-
   spawnEnemies();
+}
 
-  const income = state.entities.reduce((s, e) => s + (e.side === 'player' ? e.def.income || 0 : 0), 0);
-  if (income) state.gold += income;
-  state.turn++;
+const waveCleared = () =>
+  !state.queue.length && !state.entities.some((e) => e.side === 'enemy');
 
-  if (!state.queue.length && !state.entities.some((e) => e.side === 'enemy')) {
-    state.gold += CONFIG.waveBonus;
-    log(`✅ Oleada ${state.wave} superada (+${CONFIG.waveBonus} oro)`);
-    state.wave++;
-    startWave();
-  }
+// ---------- Fases ----------
+async function startCombat() {
+  if (state.phase !== 'build' || state.over) return;
+  const token = state;
+  state.phase = 'combat';
+  state.selected = null;
   render();
+
+  let steps = 0;
+  while (true) {
+    combatStep();
+    render();
+    if (state.over) return;
+    if (waveCleared()) break;
+    if (++steps >= CONFIG.maxCombatSteps) {
+      log('⏸ La batalla se alarga: pausa para reorganizarte');
+      state.phase = 'build';
+      render();
+      return;
+    }
+    await sleep(CONFIG.stepDelay);
+    if (state !== token) return;
+  }
+
+  // Combate terminado: las unidades vuelven a su casilla
+  const ok = await returnHome(token);
+  if (!ok) return;
+
+  finishWave();
+  state.phase = 'build';
+  render();
+}
+
+const allHome = () =>
+  state.entities.every((e) => e.side !== 'player' || (e.x === e.hx && e.y === e.hy));
+
+async function returnHome(token) {
+  state.phase = 'return';
+  render();
+  let n = 0;
+  while (!allHome() && n < 25) {
+    for (const e of state.entities) {
+      if (e.side === 'player' && e.def.mobile && (e.x !== e.hx || e.y !== e.hy)) {
+        stepToward(e, e.hx, e.hy, 0);
+      }
+    }
+    render();
+    await sleep(CONFIG.stepDelay / 2);
+    if (state !== token) return false;
+    n++;
+  }
+  // Seguridad: si alguna se quedó atascada, se coloca en su casilla
+  for (const e of state.entities) {
+    if (e.side === 'player') { e.x = e.hx; e.y = e.hy; }
+  }
+  return true;
+}
+
+function finishWave() {
+  const income = state.entities.reduce(
+    (s, e) => s + (e.side === 'player' ? e.def.income || 0 : 0), 0
+  );
+  const total = CONFIG.waveBonus + income;
+  state.gold += total;
+  log(`✅ Oleada ${state.wave} superada (+${total} oro)`);
+  state.wave++;
+  startWave();
 }
 
 // ---------- Puntuación ----------
@@ -230,7 +291,7 @@ function gameOver() {
 // ---------- Interfaz ----------
 function placeUnit(x, y) {
   const key = state.selected;
-  if (!key || state.over) return;
+  if (!key || state.over || state.phase !== 'build') return;
   const def = UNIT_TYPES[key];
   if (state.gold < def.cost) return;
   if (!isSlot(x, y) || entityAt(x, y)) return;
@@ -239,12 +300,17 @@ function placeUnit(x, y) {
   render();
 }
 
+const PHASE_NAMES = { build: 'Preparación', combat: 'Combate ⚔️', return: 'Regresando…' };
+
 function render() {
+  const building = state.phase === 'build' && !state.over;
+
   $('gold').textContent = state.gold;
   $('castle-hp').textContent = `${state.castleHp}/${CONFIG.castleHp}`;
   $('wave').textContent = state.wave;
-  $('turn').textContent = state.turn;
+  $('phase').textContent = PHASE_NAMES[state.phase];
   $('score').textContent = score();
+  $('start-combat').disabled = !building;
 
   const board = $('board');
   board.innerHTML = '';
@@ -284,7 +350,7 @@ function render() {
     const b = document.createElement('button');
     b.innerHTML = `${def.emoji} ${def.name}<br>💰${def.cost} · ${def.desc}`;
     if (state.selected === key) b.classList.add('selected');
-    b.disabled = state.gold < def.cost;
+    b.disabled = !building || state.gold < def.cost;
     b.addEventListener('click', () => {
       state.selected = state.selected === key ? null : key;
       render();
@@ -295,6 +361,6 @@ function render() {
   $('log').innerHTML = state.log.map((l) => `<li>${l}</li>`).join('');
 }
 
-$('end-turn').addEventListener('click', endTurn);
+$('start-combat').addEventListener('click', startCombat);
 $('restart').addEventListener('click', newGame);
 newGame();
