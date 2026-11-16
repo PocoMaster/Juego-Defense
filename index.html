@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Defensa del Castillo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>🏰 Defensa del Castillo</h1>
+
+  <div id="hud">
+    <span>💰 <b id="gold">0</b></span>
+    <span>🏰 <b id="castle-hp">0</b></span>
+    <span>🌊 Oleada <b id="wave">1</b></span>
+    <span>⏱️ Turno <b id="turn">1</b></span>
+    <span>⭐ <b id="score">0</b></span>
+  </div>
+
+  <div id="board"></div>
+
+  <div id="palette"></div>
+
+  <div id="controls">
+    <button id="end-turn">Terminar turno ▶</button>
+  </div>
+
+  <ul id="log"></ul>
+
+  <div id="overlay" class="hidden">
+    <div class="panel">
+      <h2>💀 El castillo ha caído</h2>
+      <p>Puntuación: <b id="final-score">0</b></p>
+      <h3>Mejores puntuaciones</h3>
+      <ol id="scores"></ol>
+      <button id="restart">Jugar de nuevo</button>
+    </div>
+  </div>
+
+  <script src="units.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
